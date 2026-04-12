@@ -1,135 +1,128 @@
-# platformpilot-operator
-// TODO(user): Add simple overview of use/purpose
+# PlatformPilot Operator
 
-## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+A Kubernetes operator that automates dev environment provisioning for engineering teams. When a `DevEnvironment` custom resource is applied, the operator reconciles a fully isolated namespace with scoped RBAC, resource quotas sized to the requested tier, and a network policy that restricts cross-namespace traffic — removing the manual toil of wiring these up per team and per environment type.
 
-## Getting Started
+---
 
-### Prerequisites
-- go version v1.24.6+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
+## Architecture
 
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
-
-```sh
-make docker-build docker-push IMG=<some-registry>/platformpilot-operator:tag
+```mermaid
+flowchart TD
+    A[DevEnvironment CRD\nteam / envType / tier / services] --> B[Reconciler]
+    B --> C[Namespace\n&lt;team&gt;-&lt;envType&gt;]
+    B --> D[RBAC\nRole + RoleBinding]
+    B --> E[ResourceQuota\ntier-based limits]
+    B --> F[NetworkPolicy\ningress-scoped]
 ```
 
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
+---
 
-**Install the CRDs into the cluster:**
+## CRD Spec Reference
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `team` | `string` | Yes | Team name — used as the namespace prefix and RBAC group subject |
+| `envType` | `string` | Yes | Environment type: `dev` or `staging` |
+| `tier` | `string` | Yes | Resource tier: `small`, `medium`, or `large` |
+| `services` | `[]string` | No | Optional list of services to provision, e.g. `postgres`, `redis` |
+
+Namespace naming convention: `<team>-<envType>` (e.g. `payments-dev`).
+
+---
+
+## Tier Sizing
+
+| Tier | CPU Request | CPU Limit | Memory Request | Memory Limit | Max Pods |
+|------|-------------|-----------|----------------|--------------|----------|
+| `small` | 2 | 4 | 2 Gi | 4 Gi | 10 |
+| `medium` | 4 | 8 | 8 Gi | 16 Gi | 20 |
+| `large` | 8 | 16 | 16 Gi | 32 Gi | 50 |
+
+---
+
+## Quick Start
+
+**Prerequisites:** Go 1.24+, kubectl, and a running Kubernetes cluster (e.g. kind, k3d).
+
+**Install the CRD:**
 
 ```sh
 make install
 ```
 
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
+**Run the operator locally (outside the cluster):**
 
 ```sh
-make deploy IMG=<some-registry>/platformpilot-operator:tag
+make run
 ```
 
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
-
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
+**Apply a sample DevEnvironment:**
 
 ```sh
-kubectl apply -k config/samples/
+kubectl apply -f config/samples/
 ```
 
->**NOTE**: Ensure that the samples has default values to test it out.
-
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
-
-```sh
-kubectl delete -k config/samples/
-```
-
-**Delete the APIs(CRDs) from the cluster:**
+**Uninstall:**
 
 ```sh
 make uninstall
 ```
 
-**UnDeploy the controller from the cluster:**
+---
 
-```sh
-make undeploy
+## Example DevEnvironment
+
+```yaml
+apiVersion: platform.platformpilot.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: payments-dev
+spec:
+  team: payments
+  envType: dev
+  tier: medium
+  services:
+    - postgres
 ```
 
-## Project Distribution
+This creates:
+- Namespace `payments-dev`
+- Role `payments-dev-role` with full access to pods, services, deployments, ingresses, PVCs, configmaps, and secrets
+- RoleBinding `payments-dev-rolebinding` binding the `payments` group to that role
+- ResourceQuota `payments-dev-resourcequota` with medium-tier limits
+- NetworkPolicy `payments-dev-networkpolicy` allowing intra-namespace ingress only
 
-Following the options to release and provide this solution to the users.
+---
 
-### By providing a bundle with all YAML files
+## Status
 
-1. Build the installer for the image built and published in the registry:
+**Implemented**
+- `DevEnvironment` CRD with kubebuilder validation markers
+- Namespace provisioning with PlatformPilot labels
+- Scoped RBAC (Role + RoleBinding) per team
+- Tier-based ResourceQuota (small / medium / large)
+- NetworkPolicy restricting ingress to same-namespace pods
 
-```sh
-make build-installer IMG=<some-registry>/platformpilot-operator:tag
-```
+**Planned**
+- Status subresource updates (`phase`, `conditions`) after each reconcile step
+- Finalizer to clean up owned resources on deletion
+- Services provisioning (deploy postgres/redis StatefulSets from `spec.services`)
+- Webhook validation (reject unknown tier/envType values at admission time)
+- Controller tests with envtest
 
-**NOTE:** The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without its
-dependencies.
+---
 
-2. Using the installer
+## Tech Stack
 
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
-the project, i.e.:
+| Layer | Technology |
+|-------|-----------|
+| Language | Go 1.24+ |
+| Operator framework | [Kubebuilder](https://book.kubebuilder.io) v4 |
+| Controller runtime | [controller-runtime](https://github.com/kubernetes-sigs/controller-runtime) v0.23 |
+| CRD API version | `platform.platformpilot.io/v1alpha1` |
 
-```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/platformpilot-operator/<tag or branch>/dist/install.yaml
-```
-
-### By providing a Helm Chart
-
-1. Build the chart using the optional helm plugin
-
-```sh
-kubebuilder edit --plugins=helm/v2-alpha
-```
-
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
-
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
-
-## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
-
-**NOTE:** Run `make help` for more information on all potential `make` targets
-
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
+---
 
 ## License
 
-Copyright 2026.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
+Apache 2.0 — see [LICENSE](LICENSE).
