@@ -1,0 +1,9 @@
+apiVersion: platform.platformpilot.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  labels:
+    app.kubernetes.io/name: platformpilot-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: devenvironment-sample
+spec:
+  # TODO(user): Add fields here
