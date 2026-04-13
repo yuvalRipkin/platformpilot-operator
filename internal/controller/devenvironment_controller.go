@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	controllerutil "sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -80,7 +81,6 @@ func namespaceName(devEnv *platformv1alpha1.DevEnvironment) string {
 // move the current state of the cluster closer to the desired state.
 func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
-
 	// Fetch the DevEnvironment resource.
 	var devEnv platformv1alpha1.DevEnvironment
 	err := r.Client.Get(ctx, req.NamespacedName, &devEnv)
@@ -92,6 +92,31 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
+	// deletionTimestamp logic
+	deletionTimesamp := devEnv.ObjectMeta.DeletionTimestamp
+	if !deletionTimesamp.IsZero() {
+		ns := &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: namespaceName(&devEnv),
+			},
+		}
+		err := r.Client.Delete(ctx, ns)
+		if err != nil && !errors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
+		log.Info("Deleted namespace", "name", ns.ObjectMeta.Name)
+
+		controllerutil.RemoveFinalizer(&devEnv, "platformpilot.io/cleanup")
+		err = r.Client.Update(ctx, &devEnv)
+		return ctrl.Result{}, err
+	}
+	if !controllerutil.ContainsFinalizer(&devEnv, "platformpilot.io/cleanup") {
+		controllerutil.AddFinalizer(&devEnv, "platformpilot.io/cleanup")
+		err := r.Client.Update(ctx, &devEnv)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	// Ensure the Namespace exists; create it if not found.
 	namespaceName := namespaceName(&devEnv)
 	var namespace corev1.Namespace
@@ -184,7 +209,7 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 	}
 
-	// Ensure the NetworkPolicy exists; create it if not found.
+	// Ensure the NetworkPolicy exists. create it if not found.
 	var networkPolicy networkingv1.NetworkPolicy
 	err = r.Client.Get(ctx, types.NamespacedName{
 		Namespace: namespaceName,
