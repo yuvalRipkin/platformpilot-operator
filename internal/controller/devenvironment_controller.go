@@ -24,6 +24,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -40,6 +41,13 @@ type DevEnvironmentReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 }
+
+const (
+	ConditionNamespaceReady     = "NamespaceReady"
+	ConditionRBACReady          = "RBACReady"
+	ConditionQuotaReady         = "QuotaReady"
+	ConditionNetworkPolicyReady = "NetworkPolicyReady"
+)
 
 var tierQuotas = map[string]corev1.ResourceList{
 	"small": {
@@ -93,8 +101,8 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	// deletionTimestamp logic
-	deletionTimesamp := devEnv.ObjectMeta.DeletionTimestamp
-	if !deletionTimesamp.IsZero() {
+	deletionTimestamp := devEnv.ObjectMeta.DeletionTimestamp
+	if !deletionTimestamp.IsZero() {
 		ns := &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: namespaceName(&devEnv),
@@ -117,6 +125,7 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			return ctrl.Result{}, err
 		}
 	}
+	devEnv.Status.Phase = "Provisioning"
 	// Ensure the Namespace exists; create it if not found.
 	namespaceName := namespaceName(&devEnv)
 	var namespace corev1.Namespace
@@ -138,6 +147,13 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			return ctrl.Result{}, err
 		}
 	}
+	apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
+		Type:               ConditionNamespaceReady,
+		Status:             metav1.ConditionTrue,
+		Reason:             "NamespaceProvisioned",
+		Message:            "Namespace " + namespaceName + " is provisioned",
+		ObservedGeneration: devEnv.Generation,
+	})
 
 	// Ensure the RBAC Role exists; create it if not found.
 	var rbac rbacv1.Role
@@ -185,6 +201,13 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			return ctrl.Result{}, err
 		}
 	}
+	apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
+		Type:               ConditionRBACReady,
+		Status:             metav1.ConditionTrue,
+		Reason:             "RBACProvisioned",
+		Message:            "Role and RoleBinding for " + namespaceName + " are provisioned",
+		ObservedGeneration: devEnv.Generation,
+	})
 
 	// Ensure the ResourceQuota exists; create it if not found.
 	var resourceQuota corev1.ResourceQuota
@@ -208,6 +231,13 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			return ctrl.Result{}, err
 		}
 	}
+	apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
+		Type:               ConditionQuotaReady,
+		Status:             metav1.ConditionTrue,
+		Reason:             "QuotaProvisioned",
+		Message:            "ResourceQuota for tier " + devEnv.Spec.Tier + " is provisioned",
+		ObservedGeneration: devEnv.Generation,
+	})
 
 	// Ensure the NetworkPolicy exists. create it if not found.
 	var networkPolicy networkingv1.NetworkPolicy
@@ -231,7 +261,18 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			return ctrl.Result{}, err
 		}
 	}
-
+	apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
+		Type:               ConditionNetworkPolicyReady,
+		Status:             metav1.ConditionTrue,
+		Reason:             "NetworkPolicyProvisioned",
+		Message:            "NetworkPolicy for " + namespaceName + " is provisioned",
+		ObservedGeneration: devEnv.Generation,
+	})
+	devEnv.Status.Phase = "Ready"
+	err = r.Status().Update(ctx, &devEnv)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 	return ctrl.Result{}, nil
 }
 
