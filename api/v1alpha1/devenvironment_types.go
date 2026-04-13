@@ -56,10 +56,10 @@ type DevEnvironmentStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
+// DevEnvironment is the Schema for the devenvironments API
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-
-// DevEnvironment is the Schema for the devenvironments API
+// +kubebuilder:resource:scope=Cluster
 type DevEnvironment struct {
 	metav1.TypeMeta `json:",inline"`
 

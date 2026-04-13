@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	platformv1alpha1 "github.com/yuvalRipkin/platformpilot-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -27,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -62,6 +64,10 @@ var tierQuotas = map[string]corev1.ResourceList{
 	},
 }
 
+func namespaceName(devEnv *platformv1alpha1.DevEnvironment) string {
+	return devEnv.Spec.Team + "-" + devEnv.Spec.EnvType
+}
+
 // +kubebuilder:rbac:groups=platform.platformpilot.io,resources=devenvironments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=platform.platformpilot.io,resources=devenvironments/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=platform.platformpilot.io,resources=devenvironments/finalizers,verbs=update
@@ -87,14 +93,17 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	// Ensure the Namespace exists; create it if not found.
-	namespaceName := devEnv.Spec.Team + "-" + devEnv.Spec.EnvType
+	namespaceName := namespaceName(&devEnv)
 	var namespace corev1.Namespace
 	err = r.Client.Get(ctx, types.NamespacedName{Name: namespaceName}, &namespace)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// Namespace not found — create it.
-			ns := r.buildNamespace(&devEnv)
-			err := r.Client.Create(ctx, ns)
+			ns, err := r.buildNamespace(&devEnv)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			err = r.Client.Create(ctx, ns)
 			if err != nil {
 				return ctrl.Result{}, err
 			}
@@ -114,8 +123,11 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// Role not found — create it.
-			rbacRole := r.buildRole(&devEnv)
-			err := r.Client.Create(ctx, rbacRole)
+			rbacRole, err := r.buildRole(&devEnv)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			err = r.Client.Create(ctx, rbacRole)
 			if err != nil {
 				return ctrl.Result{}, err
 			}
@@ -135,8 +147,11 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// RoleBinding not found — create it.
-			roleBinding := r.buildRoleBinding(&devEnv)
-			err := r.Client.Create(ctx, roleBinding)
+			roleBinding, err := r.buildRoleBinding(&devEnv)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			err = r.Client.Create(ctx, roleBinding)
 			if err != nil {
 				return ctrl.Result{}, err
 			}
@@ -155,8 +170,11 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// ResourceQuota not found — create it.
-			resourceQuota := r.buildResourceQuota(&devEnv)
-			err := r.Client.Create(ctx, resourceQuota)
+			resourceQuota, err := r.buildResourceQuota(&devEnv)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			err = r.Client.Create(ctx, resourceQuota)
 			if err != nil {
 				return ctrl.Result{}, err
 			}
@@ -175,8 +193,11 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// NetworkPolicy not found — create it.
-			networkPolicy := r.buildNetworkPolicy(&devEnv)
-			err := r.Client.Create(ctx, networkPolicy)
+			networkPolicy, err := r.buildNetworkPolicy(&devEnv)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			err = r.Client.Create(ctx, networkPolicy)
 			if err != nil {
 				return ctrl.Result{}, err
 			}
@@ -189,10 +210,10 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	return ctrl.Result{}, nil
 }
 
-func (r *DevEnvironmentReconciler) buildNamespace(devEnv *platformv1alpha1.DevEnvironment) *corev1.Namespace {
+func (r *DevEnvironmentReconciler) buildNamespace(devEnv *platformv1alpha1.DevEnvironment) (*corev1.Namespace, error) {
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: devEnv.Spec.Team + "-" + devEnv.Spec.EnvType,
+			Name: namespaceName(devEnv),
 			Labels: map[string]string{
 				"app.kubernetes.io/managed-by": "platformpilot-operator",
 				"app.kubernetes.io/part-of":    "platformpilot",
@@ -202,11 +223,15 @@ func (r *DevEnvironmentReconciler) buildNamespace(devEnv *platformv1alpha1.DevEn
 			},
 		},
 	}
-	return ns
+	err := ctrl.SetControllerReference(devEnv, ns, r.Scheme)
+	if err != nil {
+		return nil, fmt.Errorf("failed to set controller reference: %w", err)
+	}
+	return ns, nil
 }
 
-func (r *DevEnvironmentReconciler) buildRole(devEnv *platformv1alpha1.DevEnvironment) *rbacv1.Role {
-	namespaceName := devEnv.Spec.Team + "-" + devEnv.Spec.EnvType
+func (r *DevEnvironmentReconciler) buildRole(devEnv *platformv1alpha1.DevEnvironment) (*rbacv1.Role, error) {
+	namespaceName := namespaceName(devEnv)
 	role := &rbacv1.Role{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      namespaceName + "-role",
@@ -241,12 +266,15 @@ func (r *DevEnvironmentReconciler) buildRole(devEnv *platformv1alpha1.DevEnviron
 			},
 		},
 	}
-	ctrl.SetControllerReference(devEnv, role, r.Scheme)
-	return role
+	err := ctrl.SetControllerReference(devEnv, role, r.Scheme)
+	if err != nil {
+		return nil, fmt.Errorf("failed to set controller reference: %w", err)
+	}
+	return role, nil
 }
 
-func (r *DevEnvironmentReconciler) buildRoleBinding(devEnv *platformv1alpha1.DevEnvironment) *rbacv1.RoleBinding {
-	var namespaceName = devEnv.Spec.Team + "-" + devEnv.Spec.EnvType
+func (r *DevEnvironmentReconciler) buildRoleBinding(devEnv *platformv1alpha1.DevEnvironment) (*rbacv1.RoleBinding, error) {
+	var namespaceName = namespaceName(devEnv)
 	roleBinding := &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: namespaceName,
@@ -271,12 +299,19 @@ func (r *DevEnvironmentReconciler) buildRoleBinding(devEnv *platformv1alpha1.Dev
 			},
 		},
 	}
-	ctrl.SetControllerReference(devEnv, roleBinding, r.Scheme)
-	return roleBinding
+	err := ctrl.SetControllerReference(devEnv, roleBinding, r.Scheme)
+	if err != nil {
+		return nil, fmt.Errorf("failed to set controller reference: %w", err)
+	}
+	return roleBinding, nil
 }
 
-func (r *DevEnvironmentReconciler) buildResourceQuota(devEnv *platformv1alpha1.DevEnvironment) *corev1.ResourceQuota {
-	var namespaceName = devEnv.Spec.Team + "-" + devEnv.Spec.EnvType
+func (r *DevEnvironmentReconciler) buildResourceQuota(devEnv *platformv1alpha1.DevEnvironment) (*corev1.ResourceQuota, error) {
+	var namespaceName = namespaceName(devEnv)
+	quotas, ok := tierQuotas[devEnv.Spec.Tier]
+	if !ok {
+		return nil, fmt.Errorf("unknown tier: %s", devEnv.Spec.Tier)
+	}
 	quota := &corev1.ResourceQuota{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: namespaceName,
@@ -290,15 +325,19 @@ func (r *DevEnvironmentReconciler) buildResourceQuota(devEnv *platformv1alpha1.D
 			},
 		},
 		Spec: corev1.ResourceQuotaSpec{
-			Hard: tierQuotas[devEnv.Spec.Tier],
+			Hard: quotas,
 		},
 	}
-	ctrl.SetControllerReference(devEnv, quota, r.Scheme)
-	return quota
+	err := ctrl.SetControllerReference(devEnv, quota, r.Scheme)
+	if err != nil {
+		return nil, fmt.Errorf("failed to set controller reference: %w", err)
+	}
+	return quota, nil
 }
 
-func (r *DevEnvironmentReconciler) buildNetworkPolicy(devEnv *platformv1alpha1.DevEnvironment) *networkingv1.NetworkPolicy {
-	var namespaceName = devEnv.Spec.Team + "-" + devEnv.Spec.EnvType
+func (r *DevEnvironmentReconciler) buildNetworkPolicy(devEnv *platformv1alpha1.DevEnvironment) (*networkingv1.NetworkPolicy, error) {
+	var namespaceName = namespaceName(devEnv)
+	udpProtocol := corev1.ProtocolUDP
 	networkPolicy := &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: namespaceName,
@@ -315,6 +354,7 @@ func (r *DevEnvironmentReconciler) buildNetworkPolicy(devEnv *platformv1alpha1.D
 			PodSelector: metav1.LabelSelector{},
 			PolicyTypes: []networkingv1.PolicyType{
 				networkingv1.PolicyTypeIngress,
+				networkingv1.PolicyTypeEgress,
 			},
 			Ingress: []networkingv1.NetworkPolicyIngressRule{
 				{
@@ -325,10 +365,31 @@ func (r *DevEnvironmentReconciler) buildNetworkPolicy(devEnv *platformv1alpha1.D
 					},
 				},
 			},
+			Egress: []networkingv1.NetworkPolicyEgressRule{
+				{
+					To: []networkingv1.NetworkPolicyPeer{
+						{
+							PodSelector: &metav1.LabelSelector{},
+						},
+					},
+				},
+				{
+					// Allow DNS
+					Ports: []networkingv1.NetworkPolicyPort{
+						{
+							Protocol: &udpProtocol,
+							Port:     &intstr.IntOrString{Type: intstr.Int, IntVal: 53},
+						},
+					},
+				},
+			},
 		},
 	}
-	ctrl.SetControllerReference(devEnv, networkPolicy, r.Scheme)
-	return networkPolicy
+	err := ctrl.SetControllerReference(devEnv, networkPolicy, r.Scheme)
+	if err != nil {
+		return nil, fmt.Errorf("failed to set controller reference: %w", err)
+	}
+	return networkPolicy, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
