@@ -36,9 +36,9 @@ var _ = Describe("DevEnvironment Controller", func() {
 
 		ctx := context.Background()
 
+		// DevEnvironment is cluster-scoped; no namespace.
 		typeNamespacedName := types.NamespacedName{
-			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
+			Name: resourceName,
 		}
 		devenvironment := &platformv1alpha1.DevEnvironment{}
 
@@ -48,17 +48,19 @@ var _ = Describe("DevEnvironment Controller", func() {
 			if err != nil && errors.IsNotFound(err) {
 				resource := &platformv1alpha1.DevEnvironment{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      resourceName,
-						Namespace: "default",
+						Name: resourceName,
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: platformv1alpha1.DevEnvironmentSpec{
+						Team:    "alpha",
+						EnvType: "dev",
+						Tier:    "small",
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
 		})
 
 		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
 			resource := &platformv1alpha1.DevEnvironment{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
@@ -66,6 +68,7 @@ var _ = Describe("DevEnvironment Controller", func() {
 			By("Cleanup the specific resource instance DevEnvironment")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 		})
+
 		It("should successfully reconcile the resource", func() {
 			By("Reconciling the created resource")
 			controllerReconciler := &DevEnvironmentReconciler{
@@ -77,8 +80,11 @@ var _ = Describe("DevEnvironment Controller", func() {
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
+
+			By("Verifying the DevEnvironment reaches Ready phase")
+			result := &platformv1alpha1.DevEnvironment{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, result)).To(Succeed())
+			Expect(result.Status.Phase).To(Equal("Ready"))
 		})
 	})
 })
