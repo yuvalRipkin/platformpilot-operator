@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package utils provides test helpers for the platformpilot operator.
 package utils
 
 import (

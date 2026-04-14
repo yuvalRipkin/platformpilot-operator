@@ -44,6 +44,7 @@ type DevEnvironmentSpec struct {
 	Services []string `json:"services,omitempty"`
 }
 
+// DevEnvironmentStatus defines the observed state of DevEnvironment
 type DevEnvironmentStatus struct {
 	// phase is the high-level summary of the environment state
 	// +optional

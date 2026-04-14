@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package controller implements the DevEnvironment reconciler.
 package controller
 
 import (
@@ -42,6 +43,7 @@ type DevEnvironmentReconciler struct {
 	Scheme *runtime.Scheme
 }
 
+// Condition type constants for DevEnvironment status.
 const (
 	ConditionNamespaceReady     = "NamespaceReady"
 	ConditionRBACReady          = "RBACReady"
@@ -91,7 +93,7 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	log := logf.FromContext(ctx)
 	// Fetch the DevEnvironment resource.
 	var devEnv platformv1alpha1.DevEnvironment
-	err := r.Client.Get(ctx, req.NamespacedName, &devEnv)
+	err := r.Get(ctx, req.NamespacedName, &devEnv)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			log.Info("DevEnvironment not found, might have been deleted")
@@ -101,26 +103,26 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	// deletionTimestamp logic
-	deletionTimestamp := devEnv.ObjectMeta.DeletionTimestamp
+	deletionTimestamp := devEnv.DeletionTimestamp
 	if !deletionTimestamp.IsZero() {
 		ns := &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: namespaceName(&devEnv),
 			},
 		}
-		err := r.Client.Delete(ctx, ns)
+		err := r.Delete(ctx, ns)
 		if err != nil && !errors.IsNotFound(err) {
 			return ctrl.Result{}, err
 		}
-		log.Info("Deleted namespace", "name", ns.ObjectMeta.Name)
+		log.Info("Deleted namespace", "name", ns.Name)
 
 		controllerutil.RemoveFinalizer(&devEnv, "platformpilot.io/cleanup")
-		err = r.Client.Update(ctx, &devEnv)
+		err = r.Update(ctx, &devEnv)
 		return ctrl.Result{}, err
 	}
 	if !controllerutil.ContainsFinalizer(&devEnv, "platformpilot.io/cleanup") {
 		controllerutil.AddFinalizer(&devEnv, "platformpilot.io/cleanup")
-		err := r.Client.Update(ctx, &devEnv)
+		err := r.Update(ctx, &devEnv)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -131,12 +133,12 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// Ensure the Namespace exists; create it if not found.
 	namespaceName := namespaceName(&devEnv)
 	var namespace corev1.Namespace
-	err = r.Client.Get(ctx, types.NamespacedName{Name: namespaceName}, &namespace)
+	err = r.Get(ctx, types.NamespacedName{Name: namespaceName}, &namespace)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// Namespace not found — create it.
 			ns := r.buildNamespace(&devEnv)
-			err = r.Client.Create(ctx, ns)
+			err = r.Create(ctx, ns)
 			if err != nil {
 				devEnv.Status.Phase = "Error"
 				apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
@@ -165,7 +167,7 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	// Ensure the RBAC Role exists; create it if not found.
 	var rbac rbacv1.Role
-	err = r.Client.Get(ctx, types.NamespacedName{
+	err = r.Get(ctx, types.NamespacedName{
 		Name:      namespaceName + "-role",
 		Namespace: namespaceName,
 	}, &rbac)
@@ -185,7 +187,7 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 				_ = r.Status().Update(ctx, &devEnv)
 				return ctrl.Result{}, err
 			}
-			err = r.Client.Create(ctx, rbacRole)
+			err = r.Create(ctx, rbacRole)
 			if err != nil {
 				devEnv.Status.Phase = "Error"
 				apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
@@ -198,7 +200,7 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 				_ = r.Status().Update(ctx, &devEnv)
 				return ctrl.Result{}, err
 			}
-			log.Info("Created rbac role", "name", rbacRole.ObjectMeta.Name)
+			log.Info("Created rbac role", "name", rbacRole.Name)
 		} else {
 			// Requeue on transient errors.
 			return ctrl.Result{}, err
@@ -207,7 +209,7 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	// Ensure the RoleBinding exists; create it if not found.
 	var roleBinding rbacv1.RoleBinding
-	err = r.Client.Get(ctx, types.NamespacedName{
+	err = r.Get(ctx, types.NamespacedName{
 		Name:      namespaceName + "-rolebinding",
 		Namespace: namespaceName,
 	}, &roleBinding)
@@ -227,7 +229,7 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 				_ = r.Status().Update(ctx, &devEnv)
 				return ctrl.Result{}, err
 			}
-			err = r.Client.Create(ctx, roleBinding)
+			err = r.Create(ctx, roleBinding)
 			if err != nil {
 				devEnv.Status.Phase = "Error"
 				apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
@@ -240,7 +242,7 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 				_ = r.Status().Update(ctx, &devEnv)
 				return ctrl.Result{}, err
 			}
-			log.Info("Created rbac role binding", "name", roleBinding.ObjectMeta.Name)
+			log.Info("Created rbac role binding", "name", roleBinding.Name)
 		} else {
 			return ctrl.Result{}, err
 		}
@@ -255,7 +257,7 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	// Ensure the ResourceQuota exists; create it if not found.
 	var resourceQuota corev1.ResourceQuota
-	err = r.Client.Get(ctx, types.NamespacedName{
+	err = r.Get(ctx, types.NamespacedName{
 		Name:      namespaceName + "-resourcequota",
 		Namespace: namespaceName,
 	}, &resourceQuota)
@@ -275,7 +277,7 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 				_ = r.Status().Update(ctx, &devEnv)
 				return ctrl.Result{}, err
 			}
-			err = r.Client.Create(ctx, resourceQuota)
+			err = r.Create(ctx, resourceQuota)
 			if err != nil {
 				devEnv.Status.Phase = "Error"
 				apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
@@ -288,7 +290,7 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 				_ = r.Status().Update(ctx, &devEnv)
 				return ctrl.Result{}, err
 			}
-			log.Info("Created resourcequota", "name", resourceQuota.ObjectMeta.Name)
+			log.Info("Created resourcequota", "name", resourceQuota.Name)
 		} else {
 			return ctrl.Result{}, err
 		}
@@ -303,7 +305,7 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	// Ensure the NetworkPolicy exists. create it if not found.
 	var networkPolicy networkingv1.NetworkPolicy
-	err = r.Client.Get(ctx, types.NamespacedName{
+	err = r.Get(ctx, types.NamespacedName{
 		Namespace: namespaceName,
 		Name:      namespaceName + "-networkpolicy",
 	}, &networkPolicy)
@@ -323,7 +325,7 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 				_ = r.Status().Update(ctx, &devEnv)
 				return ctrl.Result{}, err
 			}
-			err = r.Client.Create(ctx, networkPolicy)
+			err = r.Create(ctx, networkPolicy)
 			if err != nil {
 				devEnv.Status.Phase = "Error"
 				apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
@@ -336,7 +338,7 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 				_ = r.Status().Update(ctx, &devEnv)
 				return ctrl.Result{}, err
 			}
-			log.Info("Created network policy", "name", networkPolicy.ObjectMeta.Name)
+			log.Info("Created network policy", "name", networkPolicy.Name)
 		} else {
 			return ctrl.Result{}, err
 		}
