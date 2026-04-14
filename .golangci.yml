@@ -1,5 +1,4 @@
-run:
-  timeout: 5m
+version: "2"
 linters:
   enable:
     - errcheck
@@ -7,9 +6,10 @@ linters:
     - revive
     - staticcheck
     - unused
-issues:
-  exclude-rules:
-    - path: "zz_generated.*\\.go"
-  exclude-use-default: false
-  max-issues-per-linter: 0
-  max-same-issues: 0
+  exclusions:
+    presets:
+      - common-false-positives
+    rules:
+      - path: 'zz_generated.*\.go'
+        linters:
+          - ALL
