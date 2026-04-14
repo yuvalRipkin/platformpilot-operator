@@ -14,7 +14,22 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26'
+          go-version: "1.25.3"
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+      - name: Run Trivy Security Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: "fs"
+          security-checks: "vuln,config,secret"
+          ignore-unfixed: true
+          format: "table"
+          exit-code: "1" # Fails the Workflow if high/crit issues are found
+          severity: "HIGH,CRITICAL"
 
       - name: Build
         run: make build
@@ -23,4 +38,4 @@ jobs:
         run: make test
 
       - name: DockerBuild
-        run: make docker-build  
+        run: make docker-build

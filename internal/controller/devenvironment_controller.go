@@ -126,6 +126,8 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 	}
 	devEnv.Status.Phase = "Provisioning"
+	_ = r.Status().Update(ctx, &devEnv)
+
 	// Ensure the Namespace exists; create it if not found.
 	namespaceName := namespaceName(&devEnv)
 	var namespace corev1.Namespace
@@ -133,12 +135,18 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// Namespace not found — create it.
-			ns, err := r.buildNamespace(&devEnv)
-			if err != nil {
-				return ctrl.Result{}, err
-			}
+			ns := r.buildNamespace(&devEnv)
 			err = r.Client.Create(ctx, ns)
 			if err != nil {
+				devEnv.Status.Phase = "Error"
+				apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
+					Type:               ConditionNamespaceReady,
+					Status:             metav1.ConditionFalse,
+					Reason:             "NamespaceBuildError",
+					Message:            fmt.Sprintf("Failed to build Namespace for %s: %v", namespaceName, err),
+					ObservedGeneration: devEnv.Generation,
+				})
+				_ = r.Status().Update(ctx, &devEnv)
 				return ctrl.Result{}, err
 			}
 			log.Info("Created namespace", "name", namespaceName)
@@ -166,10 +174,28 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			// Role not found — create it.
 			rbacRole, err := r.buildRole(&devEnv)
 			if err != nil {
+				devEnv.Status.Phase = "Error"
+				apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
+					Type:               ConditionRBACReady,
+					Status:             metav1.ConditionFalse,
+					Reason:             "RoleBuildError",
+					Message:            fmt.Sprintf("Failed to build Role for %s: %v", namespaceName, err),
+					ObservedGeneration: devEnv.Generation,
+				})
+				_ = r.Status().Update(ctx, &devEnv)
 				return ctrl.Result{}, err
 			}
 			err = r.Client.Create(ctx, rbacRole)
 			if err != nil {
+				devEnv.Status.Phase = "Error"
+				apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
+					Type:               ConditionRBACReady,
+					Status:             metav1.ConditionFalse,
+					Reason:             "RoleBuildError",
+					Message:            fmt.Sprintf("Failed to create Role for %s: %v", namespaceName, err),
+					ObservedGeneration: devEnv.Generation,
+				})
+				_ = r.Status().Update(ctx, &devEnv)
 				return ctrl.Result{}, err
 			}
 			log.Info("Created rbac role", "name", rbacRole.ObjectMeta.Name)
@@ -190,10 +216,28 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			// RoleBinding not found — create it.
 			roleBinding, err := r.buildRoleBinding(&devEnv)
 			if err != nil {
+				devEnv.Status.Phase = "Error"
+				apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
+					Type:               ConditionRBACReady,
+					Status:             metav1.ConditionFalse,
+					Reason:             "RoleBindingBuildError",
+					Message:            fmt.Sprintf("Failed to build RoleBinding for %s: %v", namespaceName, err),
+					ObservedGeneration: devEnv.Generation,
+				})
+				_ = r.Status().Update(ctx, &devEnv)
 				return ctrl.Result{}, err
 			}
 			err = r.Client.Create(ctx, roleBinding)
 			if err != nil {
+				devEnv.Status.Phase = "Error"
+				apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
+					Type:               ConditionRBACReady,
+					Status:             metav1.ConditionFalse,
+					Reason:             "RoleBindingCreationError",
+					Message:            fmt.Sprintf("Failed to create RoleBinding for %s: %v", namespaceName, err),
+					ObservedGeneration: devEnv.Generation,
+				})
+				_ = r.Status().Update(ctx, &devEnv)
 				return ctrl.Result{}, err
 			}
 			log.Info("Created rbac role binding", "name", roleBinding.ObjectMeta.Name)
@@ -220,10 +264,28 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			// ResourceQuota not found — create it.
 			resourceQuota, err := r.buildResourceQuota(&devEnv)
 			if err != nil {
+				devEnv.Status.Phase = "Error"
+				apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
+					Type:               ConditionQuotaReady,
+					Status:             metav1.ConditionFalse,
+					Reason:             "QuotaBuildError",
+					Message:            fmt.Sprintf("Failed to build ResourceQuota for %s: %v", namespaceName, err),
+					ObservedGeneration: devEnv.Generation,
+				})
+				_ = r.Status().Update(ctx, &devEnv)
 				return ctrl.Result{}, err
 			}
 			err = r.Client.Create(ctx, resourceQuota)
 			if err != nil {
+				devEnv.Status.Phase = "Error"
+				apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
+					Type:               ConditionQuotaReady,
+					Status:             metav1.ConditionFalse,
+					Reason:             "QuotaCreationError",
+					Message:            fmt.Sprintf("Failed to create ResourceQuota for %s: %v", namespaceName, err),
+					ObservedGeneration: devEnv.Generation,
+				})
+				_ = r.Status().Update(ctx, &devEnv)
 				return ctrl.Result{}, err
 			}
 			log.Info("Created resourcequota", "name", resourceQuota.ObjectMeta.Name)
@@ -250,10 +312,28 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			// NetworkPolicy not found — create it.
 			networkPolicy, err := r.buildNetworkPolicy(&devEnv)
 			if err != nil {
+				devEnv.Status.Phase = "Error"
+				apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
+					Type:               ConditionNetworkPolicyReady,
+					Status:             metav1.ConditionFalse,
+					Reason:             "NetworkPolicyBuildingError",
+					Message:            fmt.Sprintf("Failed to build NetworkPolicy for %s: %v", namespaceName, err),
+					ObservedGeneration: devEnv.Generation,
+				})
+				_ = r.Status().Update(ctx, &devEnv)
 				return ctrl.Result{}, err
 			}
 			err = r.Client.Create(ctx, networkPolicy)
 			if err != nil {
+				devEnv.Status.Phase = "Error"
+				apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
+					Type:               ConditionNetworkPolicyReady,
+					Status:             metav1.ConditionFalse,
+					Reason:             "NetworkPolicyCreationError",
+					Message:            fmt.Sprintf("Failed to create NetworkPolicy for %s: %v", namespaceName, err),
+					ObservedGeneration: devEnv.Generation,
+				})
+				_ = r.Status().Update(ctx, &devEnv)
 				return ctrl.Result{}, err
 			}
 			log.Info("Created network policy", "name", networkPolicy.ObjectMeta.Name)
@@ -276,7 +356,7 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	return ctrl.Result{}, nil
 }
 
-func (r *DevEnvironmentReconciler) buildNamespace(devEnv *platformv1alpha1.DevEnvironment) (*corev1.Namespace, error) {
+func (r *DevEnvironmentReconciler) buildNamespace(devEnv *platformv1alpha1.DevEnvironment) *corev1.Namespace {
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: namespaceName(devEnv),
@@ -289,11 +369,7 @@ func (r *DevEnvironmentReconciler) buildNamespace(devEnv *platformv1alpha1.DevEn
 			},
 		},
 	}
-	err := ctrl.SetControllerReference(devEnv, ns, r.Scheme)
-	if err != nil {
-		return nil, fmt.Errorf("failed to set controller reference: %w", err)
-	}
-	return ns, nil
+	return ns
 }
 
 func (r *DevEnvironmentReconciler) buildRole(devEnv *platformv1alpha1.DevEnvironment) (*rbacv1.Role, error) {
@@ -462,6 +538,10 @@ func (r *DevEnvironmentReconciler) buildNetworkPolicy(devEnv *platformv1alpha1.D
 func (r *DevEnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&platformv1alpha1.DevEnvironment{}).
+		Owns(&rbacv1.Role{}).
+		Owns(&rbacv1.RoleBinding{}).
+		Owns(&networkingv1.NetworkPolicy{}).
+		Owns(&corev1.ResourceQuota{}).
 		Named("devenvironment").
 		Complete(r)
 }

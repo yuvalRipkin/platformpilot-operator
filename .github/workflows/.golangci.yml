@@ -1,0 +1,15 @@
+run:
+    timeout: 5m
+linters:
+    enable:
+        - errcheck # Checks for unchecked errors
+        - govet # Standard go vet tool
+        - revive # Replacement for the deprecated golint
+        - staticcheck # Advanced static analysis
+        - unused # Checks for unused constants, variables, types and functions
+issues:
+  exclude-rules:
+    - path: "zz_generated.*\.go"
+  exclude-use-default: false
+  max-issues-per-linter: 0
+  max-same-issues: 0
