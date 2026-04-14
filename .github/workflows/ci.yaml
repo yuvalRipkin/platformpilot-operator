@@ -9,6 +9,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -37,5 +40,29 @@ jobs:
       - name: Test
         run: make test
 
-      - name: DockerBuild
-        run: make docker-build
+
+      - name: Configure AWS credentials
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: ECR Login
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Build and push image
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          IMAGE_TAG=v-$(git rev-parse --short HEAD)
+          docker build -t ${{ secrets.ECR_REPO_URL }}:${IMAGE_TAG} .
+          docker push ${{ secrets.ECR_REPO_URL }}:${IMAGE_TAG}
+      - name: Update manifests and push
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          IMAGE_TAG=v-$(git rev-parse --short HEAD)
+          sed -i "s|image: .*|image: ${{ secrets.ECR_REPO_URL }}:${IMAGE_TAG}|" deploy/install.yaml
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add deploy/install.yaml
+          git commit -m "chore: update operator image to ${IMAGE_TAG}"
+          git push
