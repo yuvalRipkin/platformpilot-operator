@@ -89,7 +89,7 @@ jobs:
 
       - name: Update manifests repo
         env:
-          MANIFESTS_REPO_TOKEN: ${{ secrets.MANIFESTS_REPO_TOKEN }}
+          MANIFESTS_REPO_TOKEN: ${{ secrets.MANIFEST_REPO_TOKEN }}
           ECR_REPO_URL: ${{ secrets.ECR_REPO_URL }}
         run: |
           git clone --depth=1 https://x-access-token:${MANIFESTS_REPO_TOKEN}@github.com/yuvalRipkin/platformpilot-manifests.git
