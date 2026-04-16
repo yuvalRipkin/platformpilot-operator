@@ -1,0 +1,8 @@
+- id: KSV-0056
+  paths:
+    - config/rbac/role.yaml
+    - deploy/install.yaml
+  statement: >
+    The operator intentionally holds NetworkPolicy create/delete/update verbs.
+    Managing NetworkPolicies is core to provisioning isolated DevEnvironment
+    namespaces. This permission is deliberate and reviewed.
