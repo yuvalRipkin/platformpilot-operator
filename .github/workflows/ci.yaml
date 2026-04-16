@@ -7,31 +7,43 @@ on:
     branches: [main]
 
 jobs:
-  build:
+  lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
-      id-token: write
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.3"
+          go-version-file: go.mod
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
-          version: latest
+          version: v2.1.6
+
+  build-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
 
       - name: Run Trivy Security Scan
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.28.0
         with:
           scan-type: "fs"
-          security-checks: "vuln,config,secret"
+          scanners: "vuln,config,secret"
           ignore-unfixed: true
           format: "table"
-          exit-code: "1" # Fails the Workflow if high/crit issues are found
+          exit-code: "1"
           severity: "HIGH,CRITICAL"
 
       - name: Build
@@ -40,29 +52,54 @@ jobs:
       - name: Test
         run: make test
 
+  deploy:
+    needs: [lint, build-test]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set image tag
+        run: echo "IMAGE_TAG=v-$(git rev-parse --short HEAD)" >> $GITHUB_ENV
 
       - name: Configure AWS credentials
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: us-east-1
+
       - name: ECR Login
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Build and push image
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: docker/build-push-action@v6
+        with:
+          push: true
+          tags: ${{ secrets.ECR_REPO_URL }}:${{ env.IMAGE_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Update manifests repo
+        env:
+          MANIFESTS_REPO_TOKEN: ${{ secrets.MANIFESTS_REPO_TOKEN }}
+          ECR_REPO_URL: ${{ secrets.ECR_REPO_URL }}
         run: |
-          IMAGE_TAG=v-$(git rev-parse --short HEAD)
-          docker build -t ${{ secrets.ECR_REPO_URL }}:${IMAGE_TAG} .
-          docker push ${{ secrets.ECR_REPO_URL }}:${IMAGE_TAG}
-      - name: Update manifests and push
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        run: |
-          IMAGE_TAG=v-$(git rev-parse --short HEAD)
-          sed -i "s|image: .*|image: ${{ secrets.ECR_REPO_URL }}:${IMAGE_TAG}|" deploy/install.yaml
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
+          git clone --depth=1 https://x-access-token:${MANIFESTS_REPO_TOKEN}@github.com/yuvalRipkin/platformpilot-manifests.git
+          cd platformpilot-manifests
+          sed -i "s|image: .*|image: ${ECR_REPO_URL}:${IMAGE_TAG}|" deploy/install.yaml
+          if git diff --quiet deploy/install.yaml; then
+            echo "Manifest already up to date, skipping commit."
+            exit 0
+          fi
+          git config --local user.name "github-actions"
+          git config --local user.email "github-actions@github.com"
           git add deploy/install.yaml
           git commit -m "chore: update operator image to ${IMAGE_TAG}"
-          git push
+          git push || (git pull --rebase origin main && git push)
