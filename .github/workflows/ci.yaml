@@ -22,7 +22,7 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
-          version: v2.1.6
+          version: v2.11.4
 
   build-test:
     runs-on: ubuntu-latest
@@ -37,7 +37,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Run Trivy Security Scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.35.0
         with:
           scan-type: "fs"
           scanners: "vuln,config,secret"
