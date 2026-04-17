@@ -367,11 +367,13 @@ func (r *DevEnvironmentReconciler) buildNamespace(devEnv *platformv1alpha1.DevEn
 		ObjectMeta: metav1.ObjectMeta{
 			Name: namespaceName(devEnv),
 			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "platformpilot-operator",
-				"app.kubernetes.io/part-of":    "platformpilot",
-				"platformpilot.io/team":        devEnv.Spec.Team,
-				"platformpilot.io/env-type":    devEnv.Spec.EnvType,
-				"platformpilot.io/tier":        devEnv.Spec.Tier,
+				"pod-security.kubernetes.io/enforce":         "restricted",
+				"pod-security.kubernetes.io/enforce-version": "latest",
+				"app.kubernetes.io/managed-by":               "platformpilot-operator",
+				"app.kubernetes.io/part-of":                  "platformpilot",
+				"platformpilot.io/team":                      devEnv.Spec.Team,
+				"platformpilot.io/env-type":                  devEnv.Spec.EnvType,
+				"platformpilot.io/tier":                      devEnv.Spec.Tier,
 			},
 		},
 	}
