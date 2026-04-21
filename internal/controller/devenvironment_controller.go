@@ -20,6 +20,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 	platformv1alpha1 "github.com/yuvalRipkin/platformpilot-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -160,6 +161,10 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			// Requeue on transient errors.
 			return ctrl.Result{}, err
 		}
+	}
+	if namespace.Status.Phase == corev1.NamespaceTerminating {
+		log.Info("Namespace is terminating, requeueing", "name", namespaceName)
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 	apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
 		Type:               ConditionNamespaceReady,
