@@ -20,7 +20,9 @@ package controller
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"time"
+
 	platformv1alpha1 "github.com/yuvalRipkin/platformpilot-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -47,7 +49,8 @@ type DevEnvironmentReconciler struct {
 // Condition type constants for DevEnvironment status.
 const (
 	ConditionNamespaceReady     = "NamespaceReady"
-	ConditionRBACReady          = "RBACReady"
+	ConditionRoleReady          = "RoleReady"
+	ConditionRoleBindingReady   = "RoleBindingReady"
 	ConditionQuotaReady         = "QuotaReady"
 	ConditionNetworkPolicyReady = "NetworkPolicyReady"
 )
@@ -96,10 +99,8 @@ func namespaceName(devEnv *platformv1alpha1.DevEnvironment) string {
 // move the current state of the cluster closer to the desired state.
 func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
-	// Fetch the DevEnvironment resource.
 	var devEnv platformv1alpha1.DevEnvironment
-	err := r.Get(ctx, req.NamespacedName, &devEnv)
-	if err != nil {
+	if err := r.Get(ctx, req.NamespacedName, &devEnv); err != nil {
 		if errors.IsNotFound(err) {
 			log.Info("DevEnvironment not found, might have been deleted")
 			return ctrl.Result{}, nil
@@ -107,270 +108,225 @@ func (r *DevEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	// deletionTimestamp logic
-	deletionTimestamp := devEnv.DeletionTimestamp
-	if !deletionTimestamp.IsZero() {
-		ns := &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: namespaceName(&devEnv),
-			},
+	original := devEnv.DeepCopy()
+	// Use a detached context for the status patch so it is not cancelled during
+	// operator shutdown before the write completes.
+	defer func() {
+		if !reflect.DeepEqual(original.Status, devEnv.Status) {
+			patchCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := r.Status().Patch(patchCtx, &devEnv, client.MergeFrom(original)); err != nil {
+				log.Error(err, "failed to patch status")
+			}
 		}
-		err := r.Delete(ctx, ns)
-		if err != nil && !errors.IsNotFound(err) {
-			return ctrl.Result{}, err
-		}
-		log.Info("Deleted namespace", "name", ns.Name)
+	}()
 
-		controllerutil.RemoveFinalizer(&devEnv, "platformpilot.io/cleanup")
-		err = r.Update(ctx, &devEnv)
-		return ctrl.Result{}, err
+	if !devEnv.DeletionTimestamp.IsZero() {
+		return r.handleDeletion(ctx, &devEnv)
 	}
 	if !controllerutil.ContainsFinalizer(&devEnv, "platformpilot.io/cleanup") {
 		controllerutil.AddFinalizer(&devEnv, "platformpilot.io/cleanup")
-		err := r.Update(ctx, &devEnv)
-		if err != nil {
+		if err := r.Update(ctx, &devEnv); err != nil {
 			return ctrl.Result{}, err
 		}
+		// Return and requeue so the next pass starts from a clean, freshly-fetched object.
+		return ctrl.Result{Requeue: true}, nil
 	}
+
 	devEnv.Status.Phase = "Provisioning"
-	_ = r.Status().Update(ctx, &devEnv)
 
-	// Ensure the Namespace exists; create it if not found.
-	namespaceName := namespaceName(&devEnv)
-	var namespace corev1.Namespace
-	err = r.Get(ctx, types.NamespacedName{Name: namespaceName}, &namespace)
-	if err != nil {
-		if errors.IsNotFound(err) {
-			// Namespace not found — create it.
-			ns := r.buildNamespace(&devEnv)
-			err = r.Create(ctx, ns)
-			if err != nil {
-				devEnv.Status.Phase = "Error"
-				apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
-					Type:               ConditionNamespaceReady,
-					Status:             metav1.ConditionFalse,
-					Reason:             "NamespaceBuildError",
-					Message:            fmt.Sprintf("Failed to build Namespace for %s: %v", namespaceName, err),
-					ObservedGeneration: devEnv.Generation,
-				})
-				_ = r.Status().Update(ctx, &devEnv)
-				return ctrl.Result{}, err
-			}
-			log.Info("Created namespace", "name", namespaceName)
-		} else {
-			// Requeue on transient errors.
-			return ctrl.Result{}, err
-		}
-	}
-	if namespace.Status.Phase == corev1.NamespaceTerminating {
-		log.Info("Namespace is terminating, requeueing", "name", namespaceName)
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-	}
-	apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
-		Type:               ConditionNamespaceReady,
-		Status:             metav1.ConditionTrue,
-		Reason:             "NamespaceProvisioned",
-		Message:            "Namespace " + namespaceName + " is provisioned",
-		ObservedGeneration: devEnv.Generation,
-	})
-
-	// Ensure the RBAC Role exists; create it if not found.
-	var rbac rbacv1.Role
-	err = r.Get(ctx, types.NamespacedName{
-		Name:      namespaceName + "-role",
-		Namespace: namespaceName,
-	}, &rbac)
-	if err != nil {
-		if errors.IsNotFound(err) {
-			// Role not found — create it.
-			rbacRole, err := r.buildRole(&devEnv)
-			if err != nil {
-				devEnv.Status.Phase = "Error"
-				apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
-					Type:               ConditionRBACReady,
-					Status:             metav1.ConditionFalse,
-					Reason:             "RoleBuildError",
-					Message:            fmt.Sprintf("Failed to build Role for %s: %v", namespaceName, err),
-					ObservedGeneration: devEnv.Generation,
-				})
-				_ = r.Status().Update(ctx, &devEnv)
-				return ctrl.Result{}, err
-			}
-			err = r.Create(ctx, rbacRole)
-			if err != nil {
-				devEnv.Status.Phase = "Error"
-				apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
-					Type:               ConditionRBACReady,
-					Status:             metav1.ConditionFalse,
-					Reason:             "RoleBuildError",
-					Message:            fmt.Sprintf("Failed to create Role for %s: %v", namespaceName, err),
-					ObservedGeneration: devEnv.Generation,
-				})
-				_ = r.Status().Update(ctx, &devEnv)
-				return ctrl.Result{}, err
-			}
-			log.Info("Created rbac role", "name", rbacRole.Name)
-		} else {
-			// Requeue on transient errors.
-			return ctrl.Result{}, err
+	for _, step := range []func(context.Context, *platformv1alpha1.DevEnvironment) (ctrl.Result, error){
+		r.reconcileNamespace,
+		r.reconcileRole,
+		r.reconcileRoleBinding,
+		r.reconcileResourceQuota,
+		r.reconcileNetworkPolicy,
+	} {
+		if result, err := step(ctx, &devEnv); err != nil || !result.IsZero() {
+			return result, err
 		}
 	}
 
-	// Ensure the RoleBinding exists; create it if not found.
-	var roleBinding rbacv1.RoleBinding
-	err = r.Get(ctx, types.NamespacedName{
-		Name:      namespaceName + "-rolebinding",
-		Namespace: namespaceName,
-	}, &roleBinding)
-	if err != nil {
-		if errors.IsNotFound(err) {
-			// RoleBinding not found — create it.
-			roleBinding, err := r.buildRoleBinding(&devEnv)
-			if err != nil {
-				devEnv.Status.Phase = "Error"
-				apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
-					Type:               ConditionRBACReady,
-					Status:             metav1.ConditionFalse,
-					Reason:             "RoleBindingBuildError",
-					Message:            fmt.Sprintf("Failed to build RoleBinding for %s: %v", namespaceName, err),
-					ObservedGeneration: devEnv.Generation,
-				})
-				_ = r.Status().Update(ctx, &devEnv)
-				return ctrl.Result{}, err
-			}
-			err = r.Create(ctx, roleBinding)
-			if err != nil {
-				devEnv.Status.Phase = "Error"
-				apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
-					Type:               ConditionRBACReady,
-					Status:             metav1.ConditionFalse,
-					Reason:             "RoleBindingCreationError",
-					Message:            fmt.Sprintf("Failed to create RoleBinding for %s: %v", namespaceName, err),
-					ObservedGeneration: devEnv.Generation,
-				})
-				_ = r.Status().Update(ctx, &devEnv)
-				return ctrl.Result{}, err
-			}
-			log.Info("Created rbac role binding", "name", roleBinding.Name)
-		} else {
-			return ctrl.Result{}, err
-		}
-	}
-	apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
-		Type:               ConditionRBACReady,
-		Status:             metav1.ConditionTrue,
-		Reason:             "RBACProvisioned",
-		Message:            "Role and RoleBinding for " + namespaceName + " are provisioned",
-		ObservedGeneration: devEnv.Generation,
-	})
-
-	// Ensure the ResourceQuota exists; create it if not found.
-	var resourceQuota corev1.ResourceQuota
-	err = r.Get(ctx, types.NamespacedName{
-		Name:      namespaceName + "-resourcequota",
-		Namespace: namespaceName,
-	}, &resourceQuota)
-	if err != nil {
-		if errors.IsNotFound(err) {
-			// ResourceQuota not found — create it.
-			resourceQuota, err := r.buildResourceQuota(&devEnv)
-			if err != nil {
-				devEnv.Status.Phase = "Error"
-				apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
-					Type:               ConditionQuotaReady,
-					Status:             metav1.ConditionFalse,
-					Reason:             "QuotaBuildError",
-					Message:            fmt.Sprintf("Failed to build ResourceQuota for %s: %v", namespaceName, err),
-					ObservedGeneration: devEnv.Generation,
-				})
-				_ = r.Status().Update(ctx, &devEnv)
-				return ctrl.Result{}, err
-			}
-			err = r.Create(ctx, resourceQuota)
-			if err != nil {
-				devEnv.Status.Phase = "Error"
-				apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
-					Type:               ConditionQuotaReady,
-					Status:             metav1.ConditionFalse,
-					Reason:             "QuotaCreationError",
-					Message:            fmt.Sprintf("Failed to create ResourceQuota for %s: %v", namespaceName, err),
-					ObservedGeneration: devEnv.Generation,
-				})
-				_ = r.Status().Update(ctx, &devEnv)
-				return ctrl.Result{}, err
-			}
-			log.Info("Created resourcequota", "name", resourceQuota.Name)
-		} else {
-			return ctrl.Result{}, err
-		}
-	}
-	apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
-		Type:               ConditionQuotaReady,
-		Status:             metav1.ConditionTrue,
-		Reason:             "QuotaProvisioned",
-		Message:            "ResourceQuota for tier " + devEnv.Spec.Tier + " is provisioned",
-		ObservedGeneration: devEnv.Generation,
-	})
-
-	// Ensure the NetworkPolicy exists. create it if not found.
-	var networkPolicy networkingv1.NetworkPolicy
-	err = r.Get(ctx, types.NamespacedName{
-		Namespace: namespaceName,
-		Name:      namespaceName + "-networkpolicy",
-	}, &networkPolicy)
-	if err != nil {
-		if errors.IsNotFound(err) {
-			// NetworkPolicy not found — create it.
-			networkPolicy, err := r.buildNetworkPolicy(&devEnv)
-			if err != nil {
-				devEnv.Status.Phase = "Error"
-				apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
-					Type:               ConditionNetworkPolicyReady,
-					Status:             metav1.ConditionFalse,
-					Reason:             "NetworkPolicyBuildingError",
-					Message:            fmt.Sprintf("Failed to build NetworkPolicy for %s: %v", namespaceName, err),
-					ObservedGeneration: devEnv.Generation,
-				})
-				_ = r.Status().Update(ctx, &devEnv)
-				return ctrl.Result{}, err
-			}
-			err = r.Create(ctx, networkPolicy)
-			if err != nil {
-				devEnv.Status.Phase = "Error"
-				apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
-					Type:               ConditionNetworkPolicyReady,
-					Status:             metav1.ConditionFalse,
-					Reason:             "NetworkPolicyCreationError",
-					Message:            fmt.Sprintf("Failed to create NetworkPolicy for %s: %v", namespaceName, err),
-					ObservedGeneration: devEnv.Generation,
-				})
-				_ = r.Status().Update(ctx, &devEnv)
-				return ctrl.Result{}, err
-			}
-			log.Info("Created network policy", "name", networkPolicy.Name)
-		} else {
-			return ctrl.Result{}, err
-		}
-	}
-	apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
-		Type:               ConditionNetworkPolicyReady,
-		Status:             metav1.ConditionTrue,
-		Reason:             "NetworkPolicyProvisioned",
-		Message:            "NetworkPolicy for " + namespaceName + " is provisioned",
-		ObservedGeneration: devEnv.Generation,
-	})
 	devEnv.Status.Phase = "Ready"
-	err = r.Status().Update(ctx, &devEnv)
-	if err != nil {
+	return ctrl.Result{}, nil
+}
+
+func (r *DevEnvironmentReconciler) handleDeletion(ctx context.Context, devEnv *platformv1alpha1.DevEnvironment) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespaceName(devEnv)}}
+	if err := r.Delete(ctx, ns); err != nil && !errors.IsNotFound(err) {
 		return ctrl.Result{}, err
 	}
+	log.Info("Deleted namespace", "name", ns.Name)
+	controllerutil.RemoveFinalizer(devEnv, "platformpilot.io/cleanup")
+	return ctrl.Result{}, r.Update(ctx, devEnv)
+}
+
+// setCondition updates or appends a status condition on the DevEnvironment.
+// ObservedGeneration is always set to the current devEnv.Generation.
+func setCondition(devEnv *platformv1alpha1.DevEnvironment, condType string, status metav1.ConditionStatus, reason, message string) {
+	apimeta.SetStatusCondition(&devEnv.Status.Conditions, metav1.Condition{
+		Type:               condType,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: devEnv.Generation,
+	})
+}
+
+func (r *DevEnvironmentReconciler) reconcileNamespace(ctx context.Context, devEnv *platformv1alpha1.DevEnvironment) (ctrl.Result, error) {
+    log := logf.FromContext(ctx)
+    nsName := namespaceName(devEnv)
+
+    var namespace corev1.Namespace
+    err := r.Get(ctx, types.NamespacedName{Name: nsName}, &namespace)
+    switch {
+    case errors.IsNotFound(err):
+        if err := r.Create(ctx, r.buildNamespace(devEnv)); err != nil {
+            devEnv.Status.Phase = "Error"
+            setCondition(devEnv, ConditionNamespaceReady, metav1.ConditionFalse, "NamespaceCreationError",
+                fmt.Sprintf("failed to create namespace %s: %v", nsName, err))
+            return ctrl.Result{}, err
+        }
+        log.Info("Created namespace", "name", nsName)
+        // Requeue to refetch and verify Phase on next pass before declaring Ready.
+        return ctrl.Result{Requeue: true}, nil
+    case err != nil:
+        return ctrl.Result{}, err
+    case namespace.Status.Phase == corev1.NamespaceTerminating:
+        log.Info("Namespace is terminating, requeueing", "name", nsName)
+        return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+    }
+
+    setCondition(devEnv, ConditionNamespaceReady, metav1.ConditionTrue, "NamespaceProvisioned",
+        "Namespace "+nsName+" is provisioned")
+    return ctrl.Result{}, nil
+}
+func (r *DevEnvironmentReconciler) reconcileRole(ctx context.Context, devEnv *platformv1alpha1.DevEnvironment) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+	nsName := namespaceName(devEnv)
+
+	var role rbacv1.Role
+	if err := r.Get(ctx, types.NamespacedName{Name: nsName + "-role", Namespace: nsName}, &role); err != nil {
+		if !errors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
+		rbacRole, err := r.buildRole(devEnv)
+		if err != nil {
+			devEnv.Status.Phase = "Error"
+			setCondition(devEnv, ConditionRoleReady, metav1.ConditionFalse, "RoleBuildError",
+				fmt.Sprintf("failed to build role for %s: %v", nsName, err))
+			return ctrl.Result{}, err
+		}
+		if err := r.Create(ctx, rbacRole); err != nil {
+			devEnv.Status.Phase = "Error"
+			setCondition(devEnv, ConditionRoleReady, metav1.ConditionFalse, "RoleCreationError",
+				fmt.Sprintf("failed to create role for %s: %v", nsName, err))
+			return ctrl.Result{}, err
+		}
+		log.Info("Created rbac role", "name", rbacRole.Name)
+	}
+
+	setCondition(devEnv, ConditionRoleReady, metav1.ConditionTrue, "RoleProvisioned",
+		"Role for "+nsName+" is provisioned")
+	return ctrl.Result{}, nil
+}
+
+func (r *DevEnvironmentReconciler) reconcileRoleBinding(ctx context.Context, devEnv *platformv1alpha1.DevEnvironment) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+	nsName := namespaceName(devEnv)
+
+	var roleBinding rbacv1.RoleBinding
+	if err := r.Get(ctx, types.NamespacedName{Name: nsName + "-rolebinding", Namespace: nsName}, &roleBinding); err != nil {
+		if !errors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
+		rb, err := r.buildRoleBinding(devEnv)
+		if err != nil {
+			devEnv.Status.Phase = "Error"
+			setCondition(devEnv, ConditionRoleBindingReady, metav1.ConditionFalse, "RoleBindingBuildError",
+				fmt.Sprintf("failed to build rolebinding for %s: %v", nsName, err))
+			return ctrl.Result{}, err
+		}
+		if err := r.Create(ctx, rb); err != nil {
+			devEnv.Status.Phase = "Error"
+			setCondition(devEnv, ConditionRoleBindingReady, metav1.ConditionFalse, "RoleBindingCreationError",
+				fmt.Sprintf("failed to create rolebinding for %s: %v", nsName, err))
+			return ctrl.Result{}, err
+		}
+		log.Info("Created rbac role binding", "name", rb.Name)
+	}
+
+	setCondition(devEnv, ConditionRoleBindingReady, metav1.ConditionTrue, "RoleBindingProvisioned",
+		"RoleBinding for "+nsName+" is provisioned")
+	return ctrl.Result{}, nil
+}
+
+func (r *DevEnvironmentReconciler) reconcileResourceQuota(ctx context.Context, devEnv *platformv1alpha1.DevEnvironment) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+	nsName := namespaceName(devEnv)
+
+	var resourceQuota corev1.ResourceQuota
+	if err := r.Get(ctx, types.NamespacedName{Name: nsName + "-resourcequota", Namespace: nsName}, &resourceQuota); err != nil {
+		if !errors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
+		rq, err := r.buildResourceQuota(devEnv)
+		if err != nil {
+			devEnv.Status.Phase = "Error"
+			setCondition(devEnv, ConditionQuotaReady, metav1.ConditionFalse, "QuotaBuildError",
+				fmt.Sprintf("failed to build resourcequota for %s: %v", nsName, err))
+			return ctrl.Result{}, err
+		}
+		if err := r.Create(ctx, rq); err != nil {
+			devEnv.Status.Phase = "Error"
+			setCondition(devEnv, ConditionQuotaReady, metav1.ConditionFalse, "QuotaCreationError",
+				fmt.Sprintf("failed to create resourcequota for %s: %v", nsName, err))
+			return ctrl.Result{}, err
+		}
+		log.Info("Created resourcequota", "name", rq.Name)
+	}
+
+	setCondition(devEnv, ConditionQuotaReady, metav1.ConditionTrue, "QuotaProvisioned",
+		"ResourceQuota for tier "+devEnv.Spec.Tier+" is provisioned")
+	return ctrl.Result{}, nil
+}
+
+func (r *DevEnvironmentReconciler) reconcileNetworkPolicy(ctx context.Context, devEnv *platformv1alpha1.DevEnvironment) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+	nsName := namespaceName(devEnv)
+
+	var networkPolicy networkingv1.NetworkPolicy
+	if err := r.Get(ctx, types.NamespacedName{Namespace: nsName, Name: nsName + "-networkpolicy"}, &networkPolicy); err != nil {
+		if !errors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
+		np, err := r.buildNetworkPolicy(devEnv)
+		if err != nil {
+			devEnv.Status.Phase = "Error"
+			setCondition(devEnv, ConditionNetworkPolicyReady, metav1.ConditionFalse, "NetworkPolicyBuildError",
+				fmt.Sprintf("failed to build networkpolicy for %s: %v", nsName, err))
+			return ctrl.Result{}, err
+		}
+		if err := r.Create(ctx, np); err != nil {
+			devEnv.Status.Phase = "Error"
+			setCondition(devEnv, ConditionNetworkPolicyReady, metav1.ConditionFalse, "NetworkPolicyCreationError",
+				fmt.Sprintf("failed to create networkpolicy for %s: %v", nsName, err))
+			return ctrl.Result{}, err
+		}
+		log.Info("Created network policy", "name", np.Name)
+	}
+
+	setCondition(devEnv, ConditionNetworkPolicyReady, metav1.ConditionTrue, "NetworkPolicyProvisioned",
+		"NetworkPolicy for "+nsName+" is provisioned")
 	return ctrl.Result{}, nil
 }
 
 func (r *DevEnvironmentReconciler) buildNamespace(devEnv *platformv1alpha1.DevEnvironment) *corev1.Namespace {
-	ns := &corev1.Namespace{
+	nsName := namespaceName(devEnv)
+	return &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: namespaceName(devEnv),
+			Name: nsName,
 			Labels: map[string]string{
 				"pod-security.kubernetes.io/enforce":         "restricted",
 				"pod-security.kubernetes.io/enforce-version": "latest",
@@ -382,15 +338,14 @@ func (r *DevEnvironmentReconciler) buildNamespace(devEnv *platformv1alpha1.DevEn
 			},
 		},
 	}
-	return ns
 }
 
 func (r *DevEnvironmentReconciler) buildRole(devEnv *platformv1alpha1.DevEnvironment) (*rbacv1.Role, error) {
-	namespaceName := namespaceName(devEnv)
+	nsName := namespaceName(devEnv)
 	role := &rbacv1.Role{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      namespaceName + "-role",
-			Namespace: namespaceName,
+			Name:      nsName + "-role",
+			Namespace: nsName,
 			Labels: map[string]string{
 				"app.kubernetes.io/managed-by": "platformpilot-operator",
 				"app.kubernetes.io/part-of":    "platformpilot",
@@ -421,19 +376,18 @@ func (r *DevEnvironmentReconciler) buildRole(devEnv *platformv1alpha1.DevEnviron
 			},
 		},
 	}
-	err := ctrl.SetControllerReference(devEnv, role, r.Scheme)
-	if err != nil {
+	if err := ctrl.SetControllerReference(devEnv, role, r.Scheme); err != nil {
 		return nil, fmt.Errorf("failed to set controller reference: %w", err)
 	}
 	return role, nil
 }
 
 func (r *DevEnvironmentReconciler) buildRoleBinding(devEnv *platformv1alpha1.DevEnvironment) (*rbacv1.RoleBinding, error) {
-	var namespaceName = namespaceName(devEnv)
+	nsName := namespaceName(devEnv)
 	roleBinding := &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: namespaceName,
-			Name:      namespaceName + "-rolebinding",
+			Namespace: nsName,
+			Name:      nsName + "-rolebinding",
 			Labels: map[string]string{
 				"app.kubernetes.io/managed-by": "platformpilot-operator",
 				"app.kubernetes.io/part-of":    "platformpilot",
@@ -445,7 +399,7 @@ func (r *DevEnvironmentReconciler) buildRoleBinding(devEnv *platformv1alpha1.Dev
 		RoleRef: rbacv1.RoleRef{
 			APIGroup: "rbac.authorization.k8s.io",
 			Kind:     "Role",
-			Name:     namespaceName + "-role",
+			Name:     nsName + "-role",
 		},
 		Subjects: []rbacv1.Subject{
 			{
@@ -454,23 +408,22 @@ func (r *DevEnvironmentReconciler) buildRoleBinding(devEnv *platformv1alpha1.Dev
 			},
 		},
 	}
-	err := ctrl.SetControllerReference(devEnv, roleBinding, r.Scheme)
-	if err != nil {
+	if err := ctrl.SetControllerReference(devEnv, roleBinding, r.Scheme); err != nil {
 		return nil, fmt.Errorf("failed to set controller reference: %w", err)
 	}
 	return roleBinding, nil
 }
 
 func (r *DevEnvironmentReconciler) buildResourceQuota(devEnv *platformv1alpha1.DevEnvironment) (*corev1.ResourceQuota, error) {
-	var namespaceName = namespaceName(devEnv)
+	nsName := namespaceName(devEnv)
 	quotas, ok := tierQuotas[devEnv.Spec.Tier]
 	if !ok {
 		return nil, fmt.Errorf("unknown tier: %s", devEnv.Spec.Tier)
 	}
 	quota := &corev1.ResourceQuota{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: namespaceName,
-			Name:      namespaceName + "-resourcequota",
+			Namespace: nsName,
+			Name:      nsName + "-resourcequota",
 			Labels: map[string]string{
 				"app.kubernetes.io/managed-by": "platformpilot-operator",
 				"app.kubernetes.io/part-of":    "platformpilot",
@@ -483,20 +436,19 @@ func (r *DevEnvironmentReconciler) buildResourceQuota(devEnv *platformv1alpha1.D
 			Hard: quotas,
 		},
 	}
-	err := ctrl.SetControllerReference(devEnv, quota, r.Scheme)
-	if err != nil {
+	if err := ctrl.SetControllerReference(devEnv, quota, r.Scheme); err != nil {
 		return nil, fmt.Errorf("failed to set controller reference: %w", err)
 	}
 	return quota, nil
 }
 
 func (r *DevEnvironmentReconciler) buildNetworkPolicy(devEnv *platformv1alpha1.DevEnvironment) (*networkingv1.NetworkPolicy, error) {
-	var namespaceName = namespaceName(devEnv)
+	nsName := namespaceName(devEnv)
 	udpProtocol := corev1.ProtocolUDP
 	networkPolicy := &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: namespaceName,
-			Name:      namespaceName + "-networkpolicy",
+			Namespace: nsName,
+			Name:      nsName + "-networkpolicy",
 			Labels: map[string]string{
 				"app.kubernetes.io/managed-by": "platformpilot-operator",
 				"app.kubernetes.io/part-of":    "platformpilot",
@@ -514,18 +466,14 @@ func (r *DevEnvironmentReconciler) buildNetworkPolicy(devEnv *platformv1alpha1.D
 			Ingress: []networkingv1.NetworkPolicyIngressRule{
 				{
 					From: []networkingv1.NetworkPolicyPeer{
-						{
-							PodSelector: &metav1.LabelSelector{},
-						},
+						{PodSelector: &metav1.LabelSelector{}},
 					},
 				},
 			},
 			Egress: []networkingv1.NetworkPolicyEgressRule{
 				{
 					To: []networkingv1.NetworkPolicyPeer{
-						{
-							PodSelector: &metav1.LabelSelector{},
-						},
+						{PodSelector: &metav1.LabelSelector{}},
 					},
 				},
 				{
@@ -540,8 +488,7 @@ func (r *DevEnvironmentReconciler) buildNetworkPolicy(devEnv *platformv1alpha1.D
 			},
 		},
 	}
-	err := ctrl.SetControllerReference(devEnv, networkPolicy, r.Scheme)
-	if err != nil {
+	if err := ctrl.SetControllerReference(devEnv, networkPolicy, r.Scheme); err != nil {
 		return nil, fmt.Errorf("failed to set controller reference: %w", err)
 	}
 	return networkPolicy, nil
