@@ -7,12 +7,14 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - configmaps
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - ""
+  resources:
   - namespaces
-  - persistentvolumeclaims
-  - pods
-  - resourcequotas
-  - services
   verbs:
   - create
   - delete
@@ -23,32 +25,25 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - events
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - apps
-  resources:
-  - deployments
+  - resourcequotas
   verbs:
   - create
   - delete
   - get
   - list
+  - patch
   - update
   - watch
 - apiGroups:
   - networking.k8s.io
   resources:
-  - ingresses
   - networkpolicies
   verbs:
   - create
   - delete
   - get
   - list
+  - patch
   - update
   - watch
 - apiGroups:
@@ -87,5 +82,6 @@ rules:
   - delete
   - get
   - list
+  - patch
   - update
   - watch

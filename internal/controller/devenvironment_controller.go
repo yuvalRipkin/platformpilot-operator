@@ -87,13 +87,10 @@ func namespaceName(devEnv *platformv1alpha1.DevEnvironment) string {
 // +kubebuilder:rbac:groups=platform.platformpilot.io,resources=devenvironments/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=platform.platformpilot.io,resources=devenvironments/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;delete
-// +kubebuilder:rbac:groups="",resources=resourcequotas,verbs=get;list;watch;create;update;delete
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;delete
-// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;delete
-// +kubebuilder:rbac:groups="",resources=pods;services;persistentvolumeclaims;configmaps,verbs=get;list;watch;create;update;delete
-// +kubebuilder:rbac:groups="",resources=events,verbs=get;list;watch
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;delete
-// +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups="",resources=resourcequotas,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -239,10 +236,46 @@ func (r *DevEnvironmentReconciler) mutateRole(devEnv *platformv1alpha1.DevEnviro
 		"platformpilot.io/env-type":    devEnv.Spec.EnvType,
 	}
 	role.Rules = []rbacv1.PolicyRule{
-		{APIGroups: []string{""}, Resources: []string{"pods", "services", "persistentvolumeclaims", "configmaps"}, Verbs: []string{"get", "list", "watch", "create", "update", "delete"}},
-		{APIGroups: []string{""}, Resources: []string{"events"}, Verbs: []string{"get", "list", "watch"}},
-		{APIGroups: []string{"apps"}, Resources: []string{"deployments"}, Verbs: []string{"get", "list", "watch", "create", "update", "delete"}},
-		{APIGroups: []string{"networking.k8s.io"}, Resources: []string{"ingresses"}, Verbs: []string{"get", "list", "watch", "create", "update", "delete"}},
+		{
+			APIGroups: []string{""},
+			Resources: []string{"pods"},
+			Verbs:     []string{"get", "list", "watch"},
+		},
+		{
+			APIGroups: []string{""},
+			Resources: []string{"pods/log"},
+			Verbs:     []string{"get"},
+		},
+		{
+			APIGroups: []string{""},
+			Resources: []string{"pods/exec", "pods/portforward"},
+			Verbs:     []string{"create"},
+		},
+		{
+			APIGroups: []string{""},
+			Resources: []string{"services", "configmaps", "secrets", "persistentvolumeclaims"},
+			Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+		},
+		{
+			APIGroups: []string{"apps"},
+			Resources: []string{"deployments", "statefulsets", "replicasets"},
+			Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+		},
+		{
+			APIGroups: []string{"networking.k8s.io"},
+			Resources: []string{"ingresses"},
+			Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+		},
+		{
+			APIGroups: []string{""},
+			Resources: []string{"events"},
+			Verbs:     []string{"get", "list", "watch"},
+		},
+		{
+			APIGroups: []string{""},
+			Resources: []string{"resourcequotas", "limitranges"},
+			Verbs:     []string{"get", "list", "watch"},
+		},
 	}
 	return ctrl.SetControllerReference(devEnv, role, r.Scheme)
 }
